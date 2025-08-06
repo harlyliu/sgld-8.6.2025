@@ -1,0 +1,5 @@
+GP.py is the python wrapper for C++ code.
+GPlib.cpython-310-darwin.so (built python lib on Mac Python 3.10, used by GP.py as import GPlib)
+GPlib.cp313-win_amd64.pyd (built python lib on Windows)
+
+!!! Tried to build GPlib on Mac Python 3.9 but there are so many errors.
