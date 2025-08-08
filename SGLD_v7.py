@@ -48,13 +48,16 @@ class SgldBayesianRegression:
         self.burn_in_epochs = burn_in_epochs
         self.batch_size = batch_size
         self.model = model
+        self.residual_squared_sum = -1
         self.samples = {'params': [], 'sigma_squared': [], 'sigma_theta_squared': [], 'sigma_lambda_squared': [], 'nu_tilde': [], 'beta': [], 'mse': []}
 
     def train(self, X_train, y_train, X_test=None, y_test=None, mse_eval_interval=10,true_sigma2=None):
         X = X_train.to(self.device)
         y = y_train.to(self.device)
-        n = X.shape[0]
-        sigma_squared = self._sample_sigma_squared(X, y)
+        y_pred = self.model(X)
+        residuals = y - y_pred  # Shape: (n, 1)
+        self.residual_squared_sum = torch.sum(residuals**2)  # (y - Xβ)^T (y - Xβ) / 2
+        sigma_squared = self._sample_sigma_squared(y.shape[0])
         sigma_theta_squared = self._sample_sigma_theta_squared()
 
         dataset = TensorDataset(X, y)
@@ -67,13 +70,9 @@ class SgldBayesianRegression:
 
             for batch_idx, (X_batch, y_batch) in enumerate(dataloader):
                 # print(f'train:: batch_idx={batch_idx} X_batch.shape={X_batch.shape}, y_batch.shape={y_batch.shape}')
-
-                # print(self.model.input_layer.beta)
-
-                # print(self.model.input_layer.beta)
-                # exit()
                 # total_grad is 1D vector, concatenated by all parameters in the model, which is a common practice
-                total_grad, mse = self._calculate_total_grad(X_batch, y_batch, sigma_squared, sigma_theta_squared, n, self.model.get_beta(), self.model.get_sigma_lambda_squared())
+                self._calculate_residual_squared_sum(X_batch, y_batch)
+                total_grad = self._calculate_total_grad(X_batch, y_batch, sigma_squared, sigma_theta_squared, self.model.get_beta(), self.model.get_sigma_lambda_squared())
                 # beta = self.model.input_layer.beta
                 # beta_thresh = self.model.input_layer.soft_threshold(beta)
                 # self.model.input_layer.beta.data.copy_(beta_thresh)
@@ -98,13 +97,14 @@ class SgldBayesianRegression:
                         param.add_(self.step_size * grad_slice + param_noise)
 
                 # Sample variances per batch
-                sigma_squared = self._sample_sigma_squared(X_batch, y_batch)
+                sigma_squared = self._sample_sigma_squared(y_batch.shape[0])
                 # sigma_squared = torch.tensor(true_sigma2**2)
                 sigma_theta_squared = self._sample_sigma_theta_squared()
                 sigma_lambda_squared = self.model.get_sigma_lambda_squared()
 
                 params_flat = torch.cat([p.detach().flatten() for p in self.model.parameters()]).cpu().numpy()
-
+                with torch.no_grad():
+                    mse = (self.residual_squared_sum / y_batch.shape[0]).item()
                 self.samples['mse'].append(mse)
                 if epoch >= self.burn_in_epochs:
                     self.samples['params'].append(params_flat)
@@ -113,6 +113,10 @@ class SgldBayesianRegression:
                     self.samples['sigma_lambda_squared'].append(sigma_lambda_squared)
                     # self.samples['nu_tilde'].append(self.model.input_layer.nu_tilde)
                     # self.samples['beta'].append(self.model.input_layer.beta)
+                # self.samples['params'].append(params_flat)
+                # self.samples['sigma_squared'].append(sigma_squared.item())
+                # self.samples['sigma_theta_squared'].append(sigma_theta_squared.item())
+                # self.samples['sigma_lambda_squared'].append(sigma_lambda_squared)
 
     def _log_prob_of_prior(self, theta, sigma_theta_squared, beta, sigma_lambda_squared):
         """
@@ -144,35 +148,40 @@ class SgldBayesianRegression:
             ans += log_norm_lambda + quadratic_term_lambda
         return ans
 
-    def _calculate_total_grad(self, X_batch, y_batch, sigma_squared, sigma_theta_squared, n, beta, sigma_lambda_squared):
-        likelihood_grad, mse = self._get_gradient_of_log_prob_likelihood(X_batch, y_batch, sigma_squared)
-        likelihood_grad_scaled = (n / self.batch_size) * likelihood_grad
+    def _calculate_residual_squared_sum(self, X, y):
+        # with torch.no_grad():
+        y_pred = self.model(X)
+        residuals = y - y_pred
+        # print('_log_prob_of_likelihood::X', X.shape)
+        # print('_log_prob_of_likelihood::y_pred', y_pred.shape)
+        # print('_log_prob_of_likelihood::residuals', residuals.shape)
+        self.residual_squared_sum = torch.sum(residuals**2)
+
+    def _calculate_total_grad(self, X_batch, y_batch, sigma_squared, sigma_theta_squared, beta, sigma_lambda_squared):
+        likelihood_grad = self._get_gradient_of_log_prob_likelihood(X_batch, y_batch, sigma_squared)
+        likelihood_grad_scaled = (y_batch.shape[0] / self.batch_size) * likelihood_grad
         prior_grad = self._get_gradient_of_log_prob_prior(sigma_theta_squared, beta, sigma_lambda_squared)
         total_grad = likelihood_grad_scaled + prior_grad
-        return total_grad, mse
+        return total_grad
 
-    def _sample_sigma_squared(self, X, y):
+    def _sample_sigma_squared(self, n):
         """
         Sample σ^2 from an Inverse-Gamma distribution using equation (20).
 
         Args:
-            X (torch.Tensor): Design matrix of shape (n, p) containing predictors.
-            y (torch.Tensor): Target vector of shape (n,) or (n, 1).
+            n int : number of observations
+            residual_squared_sum float: residual squared sum
         Returns:
             torch.Tensor: Sampled σ^2 from the Inverse-Gamma distribution.
         """
         with torch.no_grad():
-            # Number of observations (n)
-            n = y.shape[0]
-
             # Compute predictions (y_pred) using the model
-            y_pred = self.model(X)
-            residuals = y - y_pred  # Shape: (n, 1)
-            residual_squared_sum = torch.sum(residuals**2) / 2  # (y - Xβ)^T (y - Xβ) / 2
+
+            # print(f'y={y} y_pred={y_pred} residuals={residuals} residual_squared_sum={residual_squared_sum}')
 
             # New shape and scale parameters for σ^2 (equation 20)
-            new_a = self.a + n / 2
-            new_b = self.b + residual_squared_sum
+            new_a = self.a + n / 2.0
+            new_b = self.b + self.residual_squared_sum / 2.0
 
             # Sample σ^2 from Inverse-Gamma(new_shape_sigma, new_scale_sigma)
             sigma_squared = sample_inverse_gamma(new_a, new_b, size=1).squeeze()
@@ -290,7 +299,7 @@ class SgldBayesianRegression:
 
         # for param in self.model.parameters():
         #   param.requires_grad_(True)
-        log_likelihood, mse = self._log_prob_of_likelihood(y, X, sigma_squared)
+        log_likelihood = self._log_prob_of_likelihood(y, X, sigma_squared)
         log_likelihood.backward()
         total_grad = torch.cat([p.grad.flatten() for p in self.model.parameters() if p.requires_grad])
 
@@ -299,7 +308,7 @@ class SgldBayesianRegression:
         # generally good practice to ensure gradients are zeroed for the next step.
         # self.model.zero_grad()
 
-        return total_grad, mse
+        return total_grad
 
     def _get_gradient_of_log_prob_prior(self, sigma_theta_squared, beta, sigma_lambda_squared):
         """
@@ -340,22 +349,13 @@ class SgldBayesianRegression:
             y = y.to(self.device)
             n = y.shape[0]
 
-        y_pred = self.model(X)
-        residuals = y - y_pred
-        # print('_log_prob_of_likelihood::X', X.shape)
-        # print('_log_prob_of_likelihood::y_pred', y_pred.shape)
-        # print('_log_prob_of_likelihood::residuals', residuals.shape)
-        residual_squared_sum = torch.sum(residuals**2)
-
         # The following implementation has to use torch.log because the value is extremely small when n is big
         # and the calculation without log is very unstable
         log_norm = -(n / 2) * torch.log(2 * torch.pi * sigma_square)
-        quadratic_term = -(1 / (2 * sigma_square)) * residual_squared_sum
+        quadratic_term = -(1 / (2 * sigma_square)) * self.residual_squared_sum
         log_likelihood = log_norm + quadratic_term
         # print(f'log_likelihood={log_likelihood} log_norm={log_norm} quadratic_term={quadratic_term}')
         # print('_log_prob_of_likelihood::residual_squared_sum', residual_squared_sum.shape)
         # print('_log_prob_of_likelihood::quadratic_term', quadratic_term.shape)
         # print(f'_log_prob_of_likelihood::log_likelihood={log_likelihood}', log_likelihood.shape)
-        with torch.no_grad():
-            mse = (residual_squared_sum / n).item()
-        return log_likelihood, mse
+        return log_likelihood
