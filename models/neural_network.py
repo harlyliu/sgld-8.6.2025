@@ -4,7 +4,7 @@ import math
 
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, input_size=3, hidden_unit_list=(20, 30, 1), a_theta=1.0, b_theta=2.0):
+    def __init__(self, input_size=3, hidden_unit_list=(3, 5, 1), a_theta=1.0, b_theta=2.0):
         super(NeuralNetwork, self).__init__()
         self.input_size = input_size
         self.hidden_unit_list = hidden_unit_list
@@ -16,8 +16,8 @@ class NeuralNetwork(nn.Module):
             linear_layer = nn.Linear(current_input_size, units)
             layers.append(linear_layer)
 
-            if i < len(hidden_unit_list) - 1:
-                layers.append(nn.ReLU())
+            # if i < len(hidden_unit_list) - 1:
+            #     layers.append(nn.ReLU())
 
             current_input_size = units
 
@@ -41,4 +41,10 @@ class NeuralNetwork(nn.Module):
         return None
 
     def get_sigma_lambda_squared(self):
+        return None
+
+    def sample_sigma_lambda_squared(self):
+        return None
+
+    def calculate_and_set_nu(self):
         return None

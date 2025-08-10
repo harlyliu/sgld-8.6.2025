@@ -27,3 +27,9 @@ class LinearRegression(nn.Module):
 
     def get_sigma_lambda_squared(self):
         return None
+
+    def sample_sigma_lambda_squared(self):
+        return None
+
+    def calculate_and_set_nu(self):
+        return None
