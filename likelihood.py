@@ -41,7 +41,7 @@ def get_model_likelihood_gradient(model, X, y, sigma):
 
 def gaussian_likelihood_log_prob(y, X, model, sigma, device='cpu'):
     """
-    Compute the log-likelihood of y under a Gaussian likelihood model p(y; model, σ^2, X).
+    Compute the log-likelihood of y under a_for_eigen Gaussian likelihood model p(y; model, σ^2, X).
 
     Args:
         y (torch.Tensor): Target vector of shape (n,) or (n, 1).

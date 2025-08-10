@@ -5,11 +5,18 @@ import matplotlib.pyplot as plt
 
 
 def plot_mse(trainer, start=0, end=-1):
-    plot_values(trainer.samples['mse'][start:end], 'Mean Squared Error', 'Mean Squared Error over Samples/Iterations', 'Sample/Iteration Number', 'Mean Squared Error (MSE)')
+    plot_values(trainer.samples['mse'][start:end], 'Mean Squared Error', 'Mean Squared Error over Samples/Iterations',
+                'Sample/Iteration Number', 'Mean Squared Error (MSE)')
 
 
 def plot_sigma_squared(trainer, start=0, end=-1):
-    plot_values(trainer.samples['sigma_squared'][start:end], 'sigma squared', 'Sigma squared over Samples/Iterations', 'Sample/Iteration Number', 'Sigma squared')
+    plot_values(trainer.samples['sigma_squared'][start:end], 'sigma squared', 'Sigma squared over Samples/Iterations',
+                'Sample/Iteration Number', 'Sigma squared')
+
+
+def plot_sigma_theta_squared(trainer, start=0, end=-1):
+    plot_values(trainer.samples['sigma_theta_squared'][start:end], 'sigma theta squared',
+                'Sigma theta squared over Samples/Iterations', 'Sample/Iteration Number', 'Sigma theta squared')
 
 
 def plot_values(vals, label, title, xlabel, ylabel):
@@ -24,9 +31,18 @@ def plot_values(vals, label, title, xlabel, ylabel):
     plt.show()
 
 
+def plot_image(img, label, title):
+    plt.figure()
+    plt.imshow(img, interpolation='nearest')
+    plt.colorbar(label=label)
+    plt.title(title)
+    plt.tight_layout()
+    plt.show()
+
+
 def generate_linear_data(n=1000, in_features=3, noise_std=1.0):
     """
-    Generate synthetic data for multivariate linear regression: y = X @ w + b + noise.
+    Generate synthetic data for multivariate linear regression: y = X @ w + b_for_eigen + noise.
 
     Args:
         n (int): Number of samples.
@@ -47,7 +63,7 @@ def generate_linear_data(n=1000, in_features=3, noise_std=1.0):
     # Generate X (uniformly distributed between -5 and 5)
     X = torch.FloatTensor(n, in_features).uniform_(-5, 5)
 
-    # Generate y = X @ w + b + noise
+    # Generate y = X @ w + b_for_eigen + noise
     # X @ w performs matrix multiplication between (n, in_features) and (in_features,) -> (n,)
     # We add the bias and noise afterward
     noise = torch.normal(mean=0, std=noise_std, size=(n,))
@@ -74,43 +90,24 @@ def sample_inverse_gamma(shape_param, rate_param, size=1):
     return inverse_gamma_samples
 
 
-def select_significant_voxels(beta_samples, gamma):
-    """
-    Implements Section 3.3 Bayesian FDR selection.
-
-    Args:
-      beta_samples: list of T NumPy arrays, each shape (U1, V)
-      gamma:        float, desired false discovery rate threshold
-
-    Returns:
-      mask:  np.ndarray of bool, shape (V,), True = selected voxel
-      p_hat: np.ndarray of float, shape (V,), inclusion probabilities
-      delta: float, cutoff probability
-      r:     int, number of voxels selected
-    """
-    # 1) Stack into array of shape (T, U1, V)
-    beta_arr = np.stack(beta_samples, axis=0)
-    # 2) For each draw t and voxel j, flag if any unit weight ≠ 0 → shape (T, V)
-    any_nz = np.any(beta_arr != 0, axis=1)
-    # 3) Average over T draws to get p_hat[j] ∈ [0,1] → shape (V,)
-    p_hat = any_nz.astype(float).mean(axis=0)
-    # 4) Sort p_hat descending
-    order = np.argsort(-p_hat)  # indices that sort high→low
-    p_sorted = p_hat[order]  # sorted probabilities
-    # 5) Compute running FDR for top k voxels
-    fdr = np.cumsum(1 - p_sorted) / np.arange(1, len(p_sorted) + 1)
-    # print("fdr:", fdr)
-    # 6) Find largest k with FDR(k) ≤ γ
-    valid = np.where(fdr <= gamma)[0]
-    if valid.size > 0:
-        r = int(valid[-1] + 1)
-        delta = float(p_sorted[r - 1])
-    else:
-        r, delta = 0, 1.0
-
-    # 7) Build final mask
-    mask = p_hat >= delta
-    return mask, p_hat, delta, r
+def extract_beta(samples, model, start, end):
+    beta_samples = []
+    param_shape = model.input_layer.beta.shape
+    for flat_params in samples['params'][start, end]:
+        # find and reconstruct only the beta parameter
+        idx = 0
+        for p in model.parameters():
+            numel = p.numel()
+            if p is model.input_layer.beta:
+                chunk = flat_params[idx:idx + numel]
+                beta = torch.from_numpy(chunk.reshape(param_shape)).to('cpu')
+                # apply the same soft‐threshold you use in train
+                thresholded_beta = model.input_layer.soft_threshold(
+                    beta)  # thresholded_beta.shape() = (amount of units, amount of voxels)
+                beta_samples.append(thresholded_beta.detach().cpu().numpy())
+                break
+            idx += numel
+    return beta_samples
 
 
 def plot_sigma_trace(sigma_samples, true_sigma2=None):

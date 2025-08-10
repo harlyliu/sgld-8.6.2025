@@ -27,8 +27,8 @@ def sample_sigma_squared(X, y, model, a=2.0, b=50.0, device='cpu'):
         X (torch.Tensor): Design matrix of shape (n, p) containing predictors.
         y (torch.Tensor): Target vector of shape (n,) or (n, 1).
         model (model.LinearRegression): The Bayesian linear regression model.
-        a (float): Shape parameter a for σ^2 (default=2.0).
-        b (float): Scale parameter b for σ^2 (default=50.0).
+        a (float): Shape parameter a_for_eigen for σ^2 (default=2.0).
+        b (float): Scale parameter b_for_eigen for σ^2 (default=50.0).
         device (str): Device to place the tensor on ('cpu' or 'cuda').
 
     Returns:
@@ -57,7 +57,7 @@ def sample_sigma_squared(X, y, model, a=2.0, b=50.0, device='cpu'):
     # Sample σ^2 from Inverse-Gamma(new_shape_sigma, new_scale_sigma)
     sigma_squared = sample_inverse_gamma(new_shape_sigma, new_scale_sigma, size=1).squeeze()
     # print(f"Batch residual sum of squares / 2: {residual_squared_sum.item()}")
-    # print(f"shape: {new_shape_sigma.item()}, scale: {new_scale_sigma.item()} a={a} n={n}")
+    # print(f"shape: {new_shape_sigma.item()}, scale: {new_scale_sigma.item()} a_for_eigen={a_for_eigen} n={n}")
     # print(f"Sampled σ^2: {sigma_squared.item()}")
 
     return sigma_squared
@@ -82,7 +82,7 @@ def sample_sigma_beta_squared(model, a_beta=2.0, b_beta=8.0, device='cpu'):
     p = sum(p.numel() for p in model.parameters())  # Total number of parameters (weights + bias)
 
     # Compute β^T β / 2 from current model parameters
-    beta = torch.cat([p.flatten() for p in model.parameters()]).to(device)  # Flatten all parameters into a vector
+    beta = torch.cat([p.flatten() for p in model.parameters()]).to(device)  # Flatten all parameters into a_for_eigen vector
     beta_squared_sum = torch.sum(beta**2) / 2  # β^T β / 2
     # print(f"β^T β / 2: {beta_squared_sum.item()}")
 
@@ -109,8 +109,8 @@ def sample_variances(X, y, model, a=2.0, b=50.0, a_beta=2.0, b_beta=8.0, device=
         X (torch.Tensor): Design matrix of shape (n, p) containing predictors.
         y (torch.Tensor): Target vector of shape (n,) or (n, 1).
         model (model.LinearRegression): The Bayesian linear regression model.
-        a (float): Shape parameter a for σ^2 (default=2.0).
-        b (float): Scale parameter b for σ^2 (default=50.0).
+        a (float): Shape parameter a_for_eigen for σ^2 (default=2.0).
+        b (float): Scale parameter b_for_eigen for σ^2 (default=50.0).
         a_beta (float): Shape parameter aβ for σβ^2 (default=2.0).
         b_beta (float): Scale parameter bβ for σβ^2 (default=8.0).
         device (str): Device to place the tensor on ('cpu' or 'cuda').

@@ -114,8 +114,8 @@ def test_stgp_2D(in_feature):
     device = 'cpu'
     gamma = 0.05
     # Step 2: Generate synthetic data
-    # simulate a batch of images
-    dim = in_feature           # e.g. 16 for a 16×16 grid → V=256
+    # simulate a_for_eigen batch of images
+    dim = in_feature           # e.g. 16 for a_for_eigen 16×16 grid → V=256
     r2 = 0.8                  # signal-to-noise ratio
     n = 1000                  # number of images/samples
     v_list, true_beta, img, Y, true_sigma = simulate_data(

@@ -29,7 +29,7 @@ def get_model_prior_gradient(model, sigma_beta):
 
 def gaussian_prior_prob(beta, sigma_beta_squared):
     """
-    Compute the probability of theta under a Gaussian prior N(0, sigma_beta^2 I).
+    Compute the probability of theta under a_for_eigen Gaussian prior N(0, sigma_beta^2 I).
     """
     device = beta.device if beta.device.type != 'cpu' else 'cpu'
     if len(beta.shape) == 1:

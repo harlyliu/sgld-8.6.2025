@@ -1,9 +1,9 @@
-import torch
-from torch.distributions import Gamma
-from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-import matplotlib.pyplot as plt
-from utils import sample_inverse_gamma, select_significant_voxels, plot_sigma_trace
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+import time
+from utils import sample_inverse_gamma
+from sgld_utils import select_significant_voxels, implement_mask
 
 
 class SgldBayesianRegression:
@@ -17,7 +17,7 @@ class SgldBayesianRegression:
             step_size: float,
             num_epochs: int,
             burn_in_epochs: int,
-            batch_size: int,  # number of samples in a single batch
+            batch_size: int,  # number of samples in a_for_eigen single batch
             a: float = 1.0,  # shape of inverse gamma prior of sigma^2
             b: float = 2.0,  # rate of inverse gamma prior of sigma^2
             a_theta: float = 2.0,  # shape of inverse gamma prior of sigma^2_beta
@@ -49,9 +49,9 @@ class SgldBayesianRegression:
         self.batch_size = batch_size
         self.model = model
         self.residual_squared_sum = -1
-        self.samples = {'params': [], 'sigma_squared': [], 'sigma_theta_squared': [], 'sigma_lambda_squared': [], 'nu_tilde': [], 'beta': [], 'mse': []}
+        self.samples = {'params': [], 'sigma_squared': [], 'sigma_theta_squared': [], 'sigma_lambda_squared': [], 'nu': [], 'beta': [], 'mse': []}
 
-    def train(self, X_train, y_train, X_test=None, y_test=None, mse_eval_interval=10,true_sigma2=None):
+    def train(self, X_train, y_train):
         X = X_train.to(self.device)
         y = y_train.to(self.device)
         y_pred = self.model(X)
@@ -62,20 +62,20 @@ class SgldBayesianRegression:
 
         dataset = TensorDataset(X, y)
         dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-
+        start_time = time.time()
+        #print(self.model.input_layer.beta)
         for epoch in range(self.num_epochs):
             # print(f'epoch={epoch}')
             if epoch % 100 == 0:
                 print(f"Epoch {epoch + 1}/{self.num_epochs}")
-
+                print(f"time elapsed {time.time()-start_time} seconds")
             for batch_idx, (X_batch, y_batch) in enumerate(dataloader):
                 # print(f'train:: batch_idx={batch_idx} X_batch.shape={X_batch.shape}, y_batch.shape={y_batch.shape}')
-                # total_grad is 1D vector, concatenated by all parameters in the model, which is a common practice
+                # total_grad is 1D vector, concatenated by all parameters in the model, which is a_for_eigen common practice
                 self._calculate_residual_squared_sum(X_batch, y_batch)
-                total_grad = self._calculate_total_grad(X_batch, y_batch, sigma_squared, sigma_theta_squared, self.model.get_beta(), self.model.get_sigma_lambda_squared())
-                # beta = self.model.input_layer.beta
-                # beta_thresh = self.model.input_layer.soft_threshold(beta)
-                # self.model.input_layer.beta.data.copy_(beta_thresh)
+                total_grad = self._calculate_total_grad_and_distribute_gradient_to_each_param(y_batch, sigma_squared, sigma_theta_squared, self.model.get_beta(), self.model.get_sigma_lambda_squared())
+
+                # updating the params after gradient has been distributed above
                 with torch.no_grad():
                     # for name, param in self.model.named_parameters():
                     #     print(f"Layer: {name}")
@@ -98,29 +98,23 @@ class SgldBayesianRegression:
 
                 # Sample variances per batch
                 sigma_squared = self._sample_sigma_squared(y_batch.shape[0])
-                # sigma_squared = torch.tensor(true_sigma2**2)
                 sigma_theta_squared = self._sample_sigma_theta_squared()
-                sigma_lambda_squared = self.model.get_sigma_lambda_squared()
-
+                sigma_lambda_squared = self.model.sample_sigma_lambda_squared()
+                nu = self.model.calculate_and_set_nu()
                 params_flat = torch.cat([p.detach().flatten() for p in self.model.parameters()]).cpu().numpy()
                 with torch.no_grad():
                     mse = (self.residual_squared_sum / y_batch.shape[0]).item()
-                self.samples['mse'].append(mse)
-                if epoch >= self.burn_in_epochs:
+                    self.samples['mse'].append(mse)
                     self.samples['params'].append(params_flat)
                     self.samples['sigma_squared'].append(sigma_squared.item())
                     self.samples['sigma_theta_squared'].append(sigma_theta_squared.item())
                     self.samples['sigma_lambda_squared'].append(sigma_lambda_squared)
-                    # self.samples['nu_tilde'].append(self.model.input_layer.nu_tilde)
+                    self.samples['nu'].append(nu)
                     # self.samples['beta'].append(self.model.input_layer.beta)
-                # self.samples['params'].append(params_flat)
-                # self.samples['sigma_squared'].append(sigma_squared.item())
-                # self.samples['sigma_theta_squared'].append(sigma_theta_squared.item())
-                # self.samples['sigma_lambda_squared'].append(sigma_lambda_squared)
 
     def _log_prob_of_prior(self, theta, sigma_theta_squared, beta, sigma_lambda_squared):
         """
-        Compute the probability of theta under a Gaussian prior N(0, sigma_beta^2 I). eq 25 and 26
+        Compute the probability of theta under a_for_eigen Gaussian prior N(0, sigma_beta^2 I). eq 25 and 26
         """
         # print(f'theta.shap={theta.shape}')
         if len(theta.shape) == 1:
@@ -157,11 +151,21 @@ class SgldBayesianRegression:
         # print('_log_prob_of_likelihood::residuals', residuals.shape)
         self.residual_squared_sum = torch.sum(residuals**2)
 
-    def _calculate_total_grad(self, X_batch, y_batch, sigma_squared, sigma_theta_squared, beta, sigma_lambda_squared):
-        likelihood_grad = self._get_gradient_of_log_prob_likelihood(X_batch, y_batch, sigma_squared)
+    def _calculate_total_grad_and_distribute_gradient_to_each_param(self, y_batch, sigma_squared, sigma_theta_squared, beta, sigma_lambda_squared):
+        # Zero the gradients before the backward pass
+        self.model.zero_grad()
+
+        # calculate the total_grad and update parameters
+        likelihood_grad = self._get_gradient_of_log_prob_likelihood(y_batch, sigma_squared)
         likelihood_grad_scaled = (y_batch.shape[0] / self.batch_size) * likelihood_grad
         prior_grad = self._get_gradient_of_log_prob_prior(sigma_theta_squared, beta, sigma_lambda_squared)
         total_grad = likelihood_grad_scaled + prior_grad
+
+        # zero the gradients after total_grad has been calculated.
+        # params = torch.cat([p.flatten() for p in self.model.parameters()])
+        # params = params.clone().detach().requires_grad_(True).to(self.device)
+        # params.grad.zero_()
+        self.model.zero_grad()
         return total_grad
 
     def _sample_sigma_squared(self, n):
@@ -186,7 +190,7 @@ class SgldBayesianRegression:
             # Sample σ^2 from Inverse-Gamma(new_shape_sigma, new_scale_sigma)
             sigma_squared = sample_inverse_gamma(new_a, new_b, size=1).squeeze()
             # print(f"Batch residual sum of squares / 2: {residual_squared_sum.item()}")
-            # print(f"shape: {new_shape_sigma.item()}, scale: {new_scale_sigma.item()} a={a} n={n}")
+            # print(f"shape: {new_shape_sigma.item()}, scale: {new_scale_sigma.item()} a_for_eigen={a_for_eigen} n={n}")
             # print(f"Sampled σ^2: {sigma_squared.item()}")
 
             return sigma_squared
@@ -202,13 +206,13 @@ class SgldBayesianRegression:
             p = sum(p.numel() for p in self.model.parameters())  # Total number of parameters (weights + bias)
 
             # Compute β^T β / 2 from current model parameters
-            theta = torch.cat([p.flatten() for p in self.model.parameters()]).to(self.device)  # Flatten all parameters into a vector
-            theta_squared_sum = torch.sum(theta**2) / 2  # β^T β / 2
+            theta = torch.cat([p.flatten() for p in self.model.parameters()]).to(self.device)  # Flatten all parameters into a_for_eigen vector
+            theta_squared_sum = torch.sum(theta**2)  # β^T β
             # print(f"β^T β / 2: {theta_squared_sum.item()}")
 
             # New shape and scale parameters for σβ^2 (equation 21)
-            new_a_theta = self.a_theta + p / 2
-            new_b_theta = self.b_theta + theta_squared_sum
+            new_a_theta = self.a_theta + p / 2.0
+            new_b_theta = self.b_theta + theta_squared_sum / 2.0
 
             # Sample σβ^2 from Inverse-Gamma(new_shape_beta, new_scale_beta)
             sigma_theta_squared = sample_inverse_gamma(new_a_theta, new_b_theta, size=1).squeeze()
@@ -220,53 +224,14 @@ class SgldBayesianRegression:
 
             return sigma_theta_squared
 
-    def predict(self, X, gamma=None):
+    def predict(self, X, start=0, end=-1, gamma=None):
         if gamma is not None:
-            beta_samples = []
-            dev = self.model.input_layer.beta.device
-
-            param_shape = self.model.input_layer.beta.shape
-            for flat_params in self.samples['params']:
-                # find and reconstruct only the beta parameter
-                idx = 0
-                for p in self.model.parameters():
-                    numel = p.numel()
-                    if p is self.model.input_layer.beta:
-                        chunk = flat_params[idx:idx+numel]
-                        beta = torch.from_numpy(chunk.reshape(param_shape)).to(dev)
-                        # apply the same soft‐threshold you use in train
-                        b = self.model.input_layer.soft_threshold(beta)
-                        beta_samples.append(b.detach().cpu().numpy())  # (U1, V)
-                        break
-                    idx += numel
-
-            mask, p_hat, delta, r = select_significant_voxels(beta_samples, gamma)
-            print(f"Threshold δ={delta:.3f}, selecting r={r} voxels at FDR={gamma}")
-
-            # 2) zero out all beta weights for voxels where mask[j] is False
-            bool_mask = torch.tensor(mask, device=self.model.input_layer.beta.device)
-            # assume beta shape is (U1, V), so we mask along the V dimension
-            self.model.input_layer.beta.data[:, ~bool_mask] = 0
-            p_masked = p_hat * mask.astype(float)
-            #   now p_masked[j] == p_hat[j] if mask[j]==True, else 0.0
-
-            # 2) reshape into your image grid
-            dim = int(np.sqrt(p_masked.size))
-            prob_img_masked = p_masked.reshape(dim, dim)
-
-            # 3) display
-            plt.figure()
-            plt.imshow(prob_img_masked, interpolation='nearest')
-            plt.colorbar(label="Inclusion probability (masked)")
-            plt.title(f"Thresholded p̂ (δ={delta:.3f}, r={r})")
-            plt.tight_layout()
-            plt.show()
-
+            implement_mask(self.samples, gamma, self.model)
         with torch.no_grad():
             param_list = [p for p in self.model.parameters()]
             # For each sample, make new prediction and then average predictions.(Monte Carlo)
             all_predictions = []
-            for sample_params in self.samples['params']:
+            for sample_params in self.samples['params'][start:end]:
                 start_idx = 0
                 for i, param in enumerate(param_list):
                     end_idx = start_idx + param.numel()
@@ -282,30 +247,24 @@ class SgldBayesianRegression:
             print(f'predict (sample_avg)::variance_prediction={variance_prediction}')
             return torch.tensor(mean_prediction, device=X.device)
 
-    def _get_gradient_of_log_prob_likelihood(self, X, y, sigma_squared):
+    def _get_gradient_of_log_prob_likelihood(self, y, sigma_squared):
         """
         Compute the gradient of the log-likelihood with respect to model parameters.
 
         Args:
-            X (torch.Tensor): Design matrix of shape (batch_size, p).
             y (torch.Tensor): Target vector of shape (batch_size,) or (batch_size, 1).
             sigma_squared (float or torch.Tensor): Standard deviation squared of the Gaussian noise.
 
         Returns:
             torch.Tensor: Gradient of the log-likelihood with respect to model parameters.
         """
-        # Zero the gradients before the backward pass
-        self.model.zero_grad()
-
-        # for param in self.model.parameters():
-        #   param.requires_grad_(True)
-        log_likelihood = self._log_prob_of_likelihood(y, X, sigma_squared)
+        log_likelihood = self._log_prob_of_likelihood(y, sigma_squared)
         log_likelihood.backward()
         total_grad = torch.cat([p.grad.flatten() for p in self.model.parameters() if p.requires_grad])
 
         # Note: Zeroing gradients after extracting total_grad might be redundant
         # if this function is called once per optimization step. However, it's
-        # generally good practice to ensure gradients are zeroed for the next step.
+        # generally it is a good practice to ensure gradients are zeroed for the next step.
         # self.model.zero_grad()
 
         return total_grad
@@ -327,22 +286,18 @@ class SgldBayesianRegression:
         log_prior = self._log_prob_of_prior(params, sigma_theta_squared, beta, sigma_lambda_squared)
         # print(f'get_model_prior_gradient:log_prior{log_prior}')
         log_prior.backward()
-
         total_grad = params.grad.clone()
-        params.grad.zero_()
-
         return total_grad
 
-    def _log_prob_of_likelihood(self, y, X, sigma_square):
+    def _log_prob_of_likelihood(self, y, sigma_square):
         """
-        Compute the log-likelihood of y under a Gaussian likelihood model p(y; model, σ^2, X). eq 23
+        Compute the log-likelihood of y under a_for_eigen Gaussian likelihood model p(y; model, σ^2, X). eq 23
 
         Args:
             y (torch.Tensor): Target vector of shape (n,) or (n, 1).
-            X (torch.Tensor): Design matrix of shape (n, p) containing predictors.
             sigma_square (float or torch.Tensor): Standard deviation squared of the Gaussian noise (default=1.0).
         Returns:
-            torch.Tensor: torch.Size([]), a real number.
+            torch.Tensor: torch.Size([]), a_for_eigen real number.
         """
         with torch.no_grad():
             sigma_square = sigma_square.to(self.device)

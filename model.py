@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from STGP_input_layer import SpatialSTGPInputLayer
+from models.STGP_input_layer import SpatialSTGPInputLayer
 from SGLD_v7 import sample_inverse_gamma
 import math
 
@@ -78,7 +78,7 @@ class STGPNeuralNetwork(nn.Module):
             device='cpu'
     ):
         """
-        Combines a fixed STGP input transform with a standard FC network.
+        Combines a_for_eigen fixed STGP input transform with a_for_eigen standard FC network.
         """
         super().__init__()
         self.device = device
@@ -86,9 +86,9 @@ class STGPNeuralNetwork(nn.Module):
             in_feature=in_feature,
             num_of_units_in_top_layer_of_fully_connected_layers=fully_connected_layers[0],
             grids=grids,
-            poly_degree=poly_degree,
-            a=a,
-            b=b,
+            poly_degree_for_eigen=poly_degree,
+            a_for_eigen=a,
+            b_for_eigen=b,
             dimensions=dimensions,
             nu=nu,
             nu_tilde=nu_tilde,
