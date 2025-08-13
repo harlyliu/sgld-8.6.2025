@@ -25,6 +25,9 @@ class LinearRegression(nn.Module):
     def get_beta(self):
         return None
 
+    def calculate_and_set_beta(self):
+        return None
+
     def get_sigma_lambda_squared(self):
         return None
 

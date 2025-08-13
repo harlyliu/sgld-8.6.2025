@@ -43,6 +43,9 @@ class STGPNeuralNetwork(nn.Module):
     def get_beta(self):
         return self.input_layer.beta
 
+    def calculate_and_set_beta(self):
+        return self.input_layer.calculate_and_set_beta()
+
     def get_sigma_lambda_squared(self):
         return self.input_layer.sigma_lambda_squared
 
