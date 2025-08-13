@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-
+from utils import plot_image
 
 def select_significant_voxels(beta_samples, gamma):
     """
@@ -47,24 +47,7 @@ def select_significant_voxels(beta_samples, gamma):
 
 def implement_mask(samples, gamma, model, device='cpu'):
     with torch.no_grad():
-        beta_samples = []
-
-        param_shape = model.input_layer.beta.shape
-        for flat_params in samples['params']:
-            # find and reconstruct only the beta parameter
-            idx = 0
-            for p in model.parameters():
-                numel = p.numel()
-                if p is model.input_layer.beta:
-                    chunk = flat_params[idx:idx + numel]
-                    beta = torch.from_numpy(chunk.reshape(param_shape)).to(device)
-                    # apply the same soft‐threshold you use in train
-                    thresholded_beta = model.input_layer.soft_threshold(
-                        beta)  # thresholded_beta.shape() = (amount of units, amount of voxels)
-                    beta_samples.append(thresholded_beta.detach().cpu().numpy())
-                    break
-                idx += numel
-
+        beta_samples = samples['beta']
         mask, p_hat, delta, r = select_significant_voxels(beta_samples, gamma)
         print(f"Threshold δ={delta:.3f}, selecting r={r} voxels at FDR={gamma}")
 
@@ -78,4 +61,5 @@ def implement_mask(samples, gamma, model, device='cpu'):
         # 2) reshape into your image grid
         side_length_of_image = int(np.sqrt(p_masked.size))
         prob_img_masked = p_masked.reshape(side_length_of_image, side_length_of_image)
+        plot_image(prob_img_masked, "probabilities", "probabilities")
         return prob_img_masked

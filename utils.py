@@ -83,6 +83,7 @@ def sample_inverse_gamma(shape_param, rate_param, size=1):
     Returns:
         torch.Tensor: Samples from the Inverse-Gamma distribution, shape determined by size.
     """
+    # print(f'sample_inverse_gamma: shape_param={shape_param} rate_param={rate_param}')
     gamma_dist = Gamma(shape_param, rate_param)
     gamma_samples = gamma_dist.sample(torch.Size((size,)))
     inverse_gamma_samples = 1.0 / gamma_samples
